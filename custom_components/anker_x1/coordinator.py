@@ -88,6 +88,9 @@ class AnkerX1Coordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.model: str | None = None
         self.sw_version: str | None = None
 
+        # Last good inverter temperature -- see the 10156 decode for why.
+        self._last_temperature: float | None = None
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -272,7 +275,21 @@ class AnkerX1Coordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Decode Block C (base address 10156)
             # ----------------------------------------------------------
             # 10156  inverter_temperature  i16  (/10 °C)
-            inverter_temperature: float = decode_i16(c[0]) / 10.0
+            # The firmware intermittently reports 0x0000 here -- ~30% of reads
+            # (9 of 29), ground-truthed 2026-08-14 on fw 1.0.16.1 -- while every
+            # other register in the SAME response stays valid (PV voltage, PV
+            # power). That rules out a corrupt response or framing desync and
+            # points at a read-during-update race inside the device. Hold the
+            # last good value instead of letting the sensor flap to 0 °C.
+            # Trade-off: a genuine 0.0 °C reading is indistinguishable from the
+            # glitch and would also be held. Implausible for a running
+            # inverter's internal temperature, and preferable to the flapping.
+            raw_temperature = decode_i16(c[0])
+            if raw_temperature != 0:
+                self._last_temperature = raw_temperature / 10.0
+            # None until the first good read -> sensor is "unavailable" rather
+            # than reporting a fabricated 0 °C.
+            inverter_temperature: float | None = self._last_temperature
             # PV strings: the official map (protocol V1.0.0 p.11) exposes
             # Voltage + Current per string ONLY -- 8 strings packed 2 registers
             # apart from 10167 -- with NO per-string power register. Derive
