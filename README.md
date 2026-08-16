@@ -4,6 +4,11 @@
 [![Validate](https://github.com/afewyards/anker-x1-ha/actions/workflows/validate.yml/badge.svg)](https://github.com/afewyards/anker-x1-ha/actions/workflows/validate.yml)
 [![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/afewyards)
 
+> **Fork** of [afewyards/anker-x1-ha](https://github.com/afewyards/anker-x1-ha),
+> tracking upstream **v0.5.0**. Adds `PV3rd Party Power` (register 10004).
+> Issues with the integration itself belong upstream — please report them
+> [there](https://github.com/afewyards/anker-x1-ha/issues).
+
 Local **Modbus TCP** integration for the **Anker SOLIX X1** hybrid inverter /
 battery (developed and tested on **X1-H12K-T**). No cloud, no internet — Home
 Assistant talks directly to the unit on your LAN and exposes it as a single
@@ -72,6 +77,7 @@ device page.
 | `pv_power` | gross DC PV = `pv1_power` + `pv2_power` (0 with no DC PV) |
 | `usable_pv_power` | inverter's post-MPPT harvested PV total; ≤ `pv_power` at low irradiance |
 | `pv1_power` / `pv2_power` | per-string DC power (V × I) |
+| `third_party_pv_power` | shows as *PV3rd Party Power* — PV from a second array the X1 doesn't own, reported from the meter/CT (reg 10004); 0 without one |
 | `backup_power` | EPS / backup-port load |
 | `meter_total_power` | external CHINT meter total (only if a meter is wired) |
 | `rechargeable_power` / `dischargeable_power` | live charge/discharge headroom (diagnostic) |
