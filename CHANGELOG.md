@@ -1,6 +1,28 @@
 # CHANGELOG
 
 
+## v0.5.1 (2026-08-21)
+
+### Bug Fixes
+
+- **modbus**: Tolerate optional registers that never answer
+  ([`04cb4d9`](https://github.com/afewyards/anker-x1-ha/commit/04cb4d9387f59c61c106a5c6f189e4d93ac233c3))
+
+pymodbus >=3.6 raises ModbusIOException once a request exhausts its retries instead of returning a
+  response, so the `if not isError()` guards meant to make registers 10750 (serial), 10253 (pack
+  voltage) and 10620 (external meter) optional never ran. On units that do not implement 10750 the
+  exception escaped _validate_connection and the config flow reported cannot_connect, making the
+  device unaddable.
+
+Route those reads through read_optional, which separates a socket drop and a clean error response
+  (both cheap, retried) from a register that never answers (a full retry cycle, so the block is
+  dropped for good -- at the 1 s default scan interval re-probing one costs ~9 s per poll).
+
+Serial now falls back to 10100, the official PCS serial number, which already sits inside the
+  existing Block B read and needs no extra traffic. 10750 still wins when the unit answers it, so
+  unique_id stays stable for existing installs.
+
+
 ## v0.5.0 (2026-07-15)
 
 ### Bug Fixes
