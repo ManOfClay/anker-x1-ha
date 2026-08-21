@@ -28,7 +28,7 @@ from .const import (
     MAX_SCAN_INTERVAL,
     MIN_SCAN_INTERVAL,
 )
-from .modbus_client import unit_kwarg_name
+from .modbus_client import decode_string_lowbyte, read_optional, unit_kwarg_name
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -39,21 +39,6 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
         vol.Required(CONF_SLAVE, default=DEFAULT_SLAVE): int,
     }
 )
-
-
-def _decode_string_low_byte_first(registers: list[int]) -> str:
-    """Decode a Modbus register string where each register is low-byte then high-byte."""
-    chars: list[str] = []
-    for reg in registers:
-        low = reg & 0xFF
-        high = (reg >> 8) & 0xFF
-        if low == 0:
-            break
-        chars.append(chr(low))
-        if high == 0:
-            break
-        chars.append(chr(high))
-    return "".join(chars).strip()
 
 
 async def _validate_connection(
@@ -74,17 +59,25 @@ async def _validate_connection(
         if soc_result.isError():
             raise ConnectionError("Could not read SOC register")
 
-        # Read model string from registers 10090–10099 (10 registers)
-        model_result = await client.read_input_registers(10090, count=10, **unit)
+        # Model 10090–10099 plus the PCS serial 10100–10111 in one frame.
+        # Optional: a unit that does not implement them must still be addable.
+        identity = await read_optional(
+            client.read_input_registers, 10090, count=22, **unit
+        )
         model = ""
-        if not model_result.isError():
-            model = _decode_string_low_byte_first(list(model_result.registers))
+        if identity.registers is not None:
+            model = decode_string_lowbyte(identity.registers[0:10])
 
-        # Read serial string from registers 10750–10757 (8 registers)
-        serial_result = await client.read_input_registers(10750, count=8, **unit)
+        # Serial 10750–10757. Preferred over 10100 so that unique_id stays
+        # stable for installs already identified by it.
+        serial_result = await read_optional(
+            client.read_input_registers, 10750, count=8, **unit
+        )
         serial = ""
-        if not serial_result.isError():
-            serial = _decode_string_low_byte_first(list(serial_result.registers))
+        if serial_result.registers is not None:
+            serial = decode_string_lowbyte(serial_result.registers)
+        if not serial and identity.registers is not None:
+            serial = decode_string_lowbyte(identity.registers[10:22])
 
         return {"serial": serial, "model": model}
     finally:

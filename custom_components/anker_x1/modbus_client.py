@@ -20,8 +20,11 @@ the helpers below.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
-from typing import Sequence
+from typing import Any, Awaitable, Callable, NamedTuple, Sequence
+
+from pymodbus.exceptions import ConnectionException, ModbusException
 
 
 def unit_kwarg_name(client: object) -> str:
@@ -40,6 +43,43 @@ def unit_kwarg_name(client: object) -> str:
     if "device_id" in params:
         return "device_id"
     return "slave"
+
+
+class OptionalRead(NamedTuple):
+    """Outcome of reading registers that a unit may not implement."""
+
+    registers: list[int] | None
+    timed_out: bool
+
+
+async def read_optional(
+    read: Callable[..., Awaitable[Any]], address: int, count: int, **unit: Any
+) -> OptionalRead:
+    """Read registers that may be absent, absorbing the failure either way.
+
+    ``read`` is a bound client method such as ``client.read_input_registers``.
+    pymodbus >=3.6 raises ``ModbusIOException`` once a request exhausts its
+    retries instead of returning a response, so ``isError()`` alone cannot
+    make a register optional.
+
+    ``timed_out`` separates the expensive failure from the cheap ones:
+
+    - socket down (``ConnectionException``) — raised immediately, and says
+      nothing about the register, so ``timed_out=False``: ask again;
+    - clean Modbus error response (the device answered, e.g. "illegal data
+      address") — also cheap, ``timed_out=False``: ask again;
+    - the device is up but this register never answers — ``timed_out=True``
+      after a full retry/timeout cycle, so callers should stop asking.
+    """
+    try:
+        result = await read(address, count=count, **unit)
+    except ConnectionException:
+        return OptionalRead(None, False)
+    except (ModbusException, asyncio.TimeoutError, OSError):
+        return OptionalRead(None, True)
+    if result.isError():
+        return OptionalRead(None, False)
+    return OptionalRead(list(result.registers), False)
 
 
 # ---------------------------------------------------------------------------

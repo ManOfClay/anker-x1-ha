@@ -9,10 +9,17 @@ Register map summary
 --------------------
 Block A  read_input_registers(10000, count=40)  → addresses 10000-10039
 Block B  read_input_registers(10090, count=43)  → addresses 10090-10132
+         (10100-10111 = PCS serial, used when 10750 is unavailable)
 Block C  read_input_registers(10156, count=60)  → addresses 10156-10215
-Block D  read_input_registers(10750, count=8)   → addresses 10750-10757  (serial, cached)
+Block D  read_input_registers(10750, count=8)   → addresses 10750-10757  (serial, read once)
 Block E  read_holding_registers(10060, count=21) → addresses 10060-10080  (work_mode, export/import power limit control)
-Block M  read_input_registers(10620, count=47)  → addresses 10620-10666  (external meter, tolerant)
+Block H  read_input_registers(10253, count=1)   → address  10253          (battery pack voltage)
+Block M  read_input_registers(10620, count=47)  → addresses 10620-10666  (external meter)
+
+Blocks D, H and M are optional: not every model implements them. They go
+through `read_optional`, and a block that times out is disabled for the life
+of the coordinator — at a 1 s scan interval, re-probing a dead register burns
+a full retry/timeout cycle on every poll.
 """
 
 from __future__ import annotations
@@ -46,6 +53,7 @@ from .modbus_client import (
     decode_u16,
     decode_u32_le,
     le_words,
+    read_optional,
     unit_kwarg_name,
 )
 
@@ -88,9 +96,40 @@ class AnkerX1Coordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.model: str | None = None
         self.sw_version: str | None = None
 
+        # Optional-register state: 10750 is probed at most once, and any
+        # optional block that times out is dropped for good.
+        self._serial_probe_done: bool = False
+        self._disabled_blocks: set[str] = set()
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    async def _read_optional_block(
+        self, block: str, address: int, count: int
+    ) -> list[int] | None:
+        """Read a block not every unit implements, disabling it after a timeout.
+
+        A clean Modbus error response is cheap, so the block is simply empty
+        this cycle and retried on the next poll. A timeout costs a full
+        retry cycle every poll, so the block is dropped for good.
+        """
+        if block in self._disabled_blocks:
+            return None
+        result = await read_optional(
+            self._client.read_input_registers,
+            address,
+            count=count,
+            **self._unit_kwargs,
+        )
+        if result.timed_out:
+            self._disabled_blocks.add(block)
+            _LOGGER.warning(
+                "Register block %s (%s) did not respond; disabling it for this device",
+                block,
+                address,
+            )
+        return result.registers
 
     async def _ensure_connected(self) -> None:
         """Connect the Modbus client if it is not already connected."""
@@ -142,14 +181,26 @@ class AnkerX1Coordinator(DataUpdateCoordinator[dict[str, Any]]):
             c = rr_c.registers  # index 0 = address 10156
 
             # ----------------------------------------------------------
-            # Block D: serial string 10750-10757  (cached after first ok)
+            # Block D: serial string 10750-10757. Read-once identity data, so
+            # probe it a single time whatever the outcome; units that do not
+            # implement it fall back to 10100 in the Block B decode below.
             # ----------------------------------------------------------
-            if self.serial is None:
-                rr_d = await self._client.read_input_registers(
-                    10750, count=8, **self._unit_kwargs
+            if self.serial is None and not self._serial_probe_done:
+                self._serial_probe_done = True
+                serial_read = await read_optional(
+                    self._client.read_input_registers,
+                    10750,
+                    count=8,
+                    **self._unit_kwargs,
                 )
-                if not rr_d.isError():
-                    self.serial = decode_string_lowbyte(rr_d.registers)
+                if serial_read.registers is not None:
+                    self.serial = decode_string_lowbyte(serial_read.registers) or None
+                else:
+                    _LOGGER.debug(
+                        "Serial register 10750 unavailable on %s:%s; using 10100",
+                        self._host,
+                        self._port,
+                    )
 
             # ----------------------------------------------------------
             # Block E: holding registers 10060-10080  (work_mode, export/
@@ -187,25 +238,19 @@ class AnkerX1Coordinator(DataUpdateCoordinator[dict[str, Any]]):
             g = rr_g.registers  # index 0 = address 10224
 
             # ----------------------------------------------------------
-            # Block H: battery pack voltage 10253  (tolerant: not all units
+            # Block H: battery pack voltage 10253  (optional: not all units
             # implement this register, so a failure here must not sink the
-            # rest of the poll — mirrors the Block D serial-read pattern)
+            # rest of the poll)
             # ----------------------------------------------------------
-            rr_h = await self._client.read_input_registers(
-                10253, count=1, **self._unit_kwargs
-            )
-            h = rr_h.registers if not rr_h.isError() else None  # index 0 = address 10253
+            h = await self._read_optional_block("H", 10253, 1)  # index 0 = address 10253
 
             # ----------------------------------------------------------
             # Block M: input registers 10620-10666 (count=47) — external
-            # CHINT 3-phase meter. Tolerant read (like Block H): not every
+            # CHINT 3-phase meter. Optional read (like Block H): not every
             # unit has a meter connected, so a failure here must not sink
             # the rest of the poll.
             # ----------------------------------------------------------
-            rr_m = await self._client.read_input_registers(
-                10620, count=47, **self._unit_kwargs
-            )
-            m = rr_m.registers if not rr_m.isError() else None  # index 0 = address 10620
+            m = await self._read_optional_block("M", 10620, 47)  # index 0 = address 10620
 
             # ----------------------------------------------------------
             # Decode Block A (base address 10000)
@@ -258,6 +303,11 @@ class AnkerX1Coordinator(DataUpdateCoordinator[dict[str, Any]]):
             # 10090-10099  model  string(10 regs)
             if self.model is None:
                 self.model = decode_string_lowbyte(b[0:10])  # 10090-10099
+            # 10100-10111  PCS serial  string(12 regs). Fallback only: 10750
+            # wins whenever the unit answers it, so unique_id stays stable for
+            # installs that already identify by that serial.
+            if self.serial is None:
+                self.serial = decode_string_lowbyte(b[10:22]) or None  # 10100-10111
             # 10112-10117  sw_version  string(6 regs)
             if self.sw_version is None:
                 self.sw_version = decode_string_lowbyte(b[22:28])  # 10112-10117
