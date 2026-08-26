@@ -17,17 +17,28 @@ Block H  read_input_registers(10253, count=1)   → address  10253          (bat
 Block M  read_input_registers(10620, count=47)  → addresses 10620-10666  (external meter)
 
 Blocks D, H and M are optional: not every model implements them. They go
-through `read_optional`, and a block that times out is disabled for the life
-of the coordinator — at a 1 s scan interval, re-probing a dead register burns
-a full retry/timeout cycle on every poll.
+through `read_optional`. At a 1 s scan interval, re-probing a dead register
+burns a full retry/timeout cycle on every poll, so a block that keeps quiet is
+disabled — but only after repeated CONSECUTIVE timeouts, and it is re-probed
+periodically, because one link glitch makes every block look dead (see below).
+
+Link recovery
+-------------
+pymodbus leaves the socket open when a request exhausts its retries, and the
+late reply then lands against the NEXT request's transaction id: every read
+from then on logs "request ask for transaction_id=X but got id=Y, Skipping"
+and the client never resynchronises, while still reporting `connected`.
+Reconnecting is the only way out, so every transport failure drops the socket
+(`_drop_connection`) and the next poll builds a fresh one.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import asynccontextmanager
 from datetime import timedelta
-from typing import Any
+from typing import Any, AsyncIterator
 
 from pymodbus.client import AsyncModbusTcpClient
 
@@ -47,11 +58,14 @@ from .const import (
     WORK_MODE_VPP,
 )
 from .modbus_client import (
+    TRANSPORT_ERRORS,
+    OptionalBlocks,
     decode_i16,
     decode_i32_le,
     decode_string_lowbyte,
     decode_u16,
     decode_u32_le,
+    guarded_call,
     le_words,
     read_optional,
     unit_kwarg_name,
@@ -96,25 +110,77 @@ class AnkerX1Coordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.model: str | None = None
         self.sw_version: str | None = None
 
-        # Optional-register state: 10750 is probed at most once, and any
-        # optional block that times out is dropped for good.
+        # Optional-register state: 10750 is probed at most once. Every other
+        # optional block is tracked by OptionalBlocks, which retires one only
+        # after repeated CONSECUTIVE timeouts and re-probes it later.
         self._serial_probe_done: bool = False
-        self._disabled_blocks: set[str] = set()
+        self._optional: OptionalBlocks = OptionalBlocks()
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def _drop_connection(self) -> None:
+        """Close the socket so the next request reconnects on a clean stream.
+
+        pymodbus keeps the socket open after a request exhausts its retries,
+        and a late reply then lands against the NEXT request's transaction id.
+        From there every read logs "request ask for transaction_id=X but got
+        id=Y, Skipping" and the client never resynchronises — while still
+        reporting ``connected``, so :meth:`_ensure_connected` is no help.
+        A fresh connection restarts the transaction counter; nothing else does.
+        """
+        try:
+            self._client.close()
+        except Exception:  # noqa: BLE001 — best-effort teardown, never mask the real error
+            _LOGGER.debug("Closing the Modbus socket after a transport error failed", exc_info=True)
+
+    async def _guarded(self, call, *args, **kwargs):
+        """Run one client call, dropping a wedged socket before re-raising."""
+        return await guarded_call(
+            call, *args, on_transport_error=self._drop_connection, **kwargs
+        )
+
+    @asynccontextmanager
+    async def _reconnect_on_transport_error(self) -> AsyncIterator[None]:
+        """Drop the socket if the wrapped work dies on a transport error.
+
+        Wraps the poll without re-indenting it, so the register decode stays
+        one readable block. Anything in :data:`TRANSPORT_ERRORS` means the
+        link is in doubt and pymodbus will not resynchronise by itself (see
+        :meth:`_drop_connection`); it becomes ``UpdateFailed`` so the poll
+        logs one line rather than a traceback every second.
+
+        An ``UpdateFailed`` raised inside the poll — a block whose response
+        ``isError()`` — passes through untouched: the device answered, so the
+        socket is fine.
+        """
+        try:
+            yield
+        except TRANSPORT_ERRORS as err:
+            self._drop_connection()
+            raise UpdateFailed(
+                f"Modbus transport error on {self._host}:{self._port}; "
+                f"reconnecting on the next poll: {err}"
+            ) from err
+
     async def _read_optional_block(
         self, block: str, address: int, count: int
     ) -> list[int] | None:
-        """Read a block not every unit implements, disabling it after a timeout.
+        """Read a block not every unit implements, retiring it if it keeps quiet.
 
         A clean Modbus error response is cheap, so the block is simply empty
-        this cycle and retried on the next poll. A timeout costs a full
-        retry cycle every poll, so the block is dropped for good.
+        this cycle and retried on the next poll.
+
+        A timeout is the expensive one — it costs a full retry cycle every
+        poll — but it is also exactly what a skewed transaction stream looks
+        like, so it cannot be taken at face value: retiring on the first
+        timeout once left a live site's meter block dead for the rest of the
+        night after a single link glitch. The block is retired only after
+        repeated CONSECUTIVE timeouts, and the socket is dropped meanwhile so
+        the stream is rebuilt rather than limped along.
         """
-        if block in self._disabled_blocks:
+        if not self._optional.should_read(block):
             return None
         result = await read_optional(
             self._client.read_input_registers,
@@ -123,12 +189,17 @@ class AnkerX1Coordinator(DataUpdateCoordinator[dict[str, Any]]):
             **self._unit_kwargs,
         )
         if result.timed_out:
-            self._disabled_blocks.add(block)
-            _LOGGER.warning(
-                "Register block %s (%s) did not respond; disabling it for this device",
-                block,
-                address,
-            )
+            self._drop_connection()
+            if self._optional.record_timeout(block):
+                _LOGGER.warning(
+                    "Register block %s (%s) did not respond on %d consecutive polls; "
+                    "skipping it for now and re-probing later",
+                    block,
+                    address,
+                    self._optional.threshold,
+                )
+        elif result.registers is not None:
+            self._optional.record_success(block)
         return result.registers
 
     async def _ensure_connected(self) -> None:
@@ -146,7 +217,7 @@ class AnkerX1Coordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch all live data from the inverter in one polling cycle."""
-        async with self._lock:
+        async with self._reconnect_on_transport_error(), self._lock:
             await self._ensure_connected()
 
             # ----------------------------------------------------------
@@ -564,13 +635,15 @@ class AnkerX1Coordinator(DataUpdateCoordinator[dict[str, Any]]):
         async with self._lock:
             await self._ensure_connected()
             # Switch to VPP/3rd-party mode first.
-            wr = await self._client.write_register(
+            wr = await self._guarded(
+                self._client.write_register,
                 10064, WORK_MODE_VPP, **self._unit_kwargs
             )
             if wr.isError():
                 raise RuntimeError(f"Failed to set VPP work mode: {wr}")
             # Write power setpoint as signed 32-bit LE at 10071.
-            wr2 = await self._client.write_registers(
+            wr2 = await self._guarded(
+                self._client.write_registers,
                 10071, le_words(watts), **self._unit_kwargs
             )
             if wr2.isError():
@@ -581,7 +654,7 @@ class AnkerX1Coordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Write a work-mode code to holding register 10064."""
         async with self._lock:
             await self._ensure_connected()
-            wr = await self._client.write_register(10064, value, **self._unit_kwargs)
+            wr = await self._guarded(self._client.write_register, 10064, value, **self._unit_kwargs)
             if wr.isError():
                 raise RuntimeError(f"Failed to write work mode {value}: {wr}")
         await self.async_request_refresh()
@@ -590,7 +663,7 @@ class AnkerX1Coordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Write the export power limit control mode to holding register 10074."""
         async with self._lock:
             await self._ensure_connected()
-            wr = await self._client.write_register(10074, mode, **self._unit_kwargs)
+            wr = await self._guarded(self._client.write_register, 10074, mode, **self._unit_kwargs)
             if wr.isError():
                 raise RuntimeError(f"Failed to write export limit mode {mode}: {wr}")
         await self.async_request_refresh()
@@ -599,7 +672,8 @@ class AnkerX1Coordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Write the export power limit value as signed 32-bit LE at 10075."""
         async with self._lock:
             await self._ensure_connected()
-            wr = await self._client.write_registers(
+            wr = await self._guarded(
+                self._client.write_registers,
                 10075, le_words(value), **self._unit_kwargs
             )
             if wr.isError():
@@ -610,7 +684,7 @@ class AnkerX1Coordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Write the import power limit control mode to holding register 10077."""
         async with self._lock:
             await self._ensure_connected()
-            wr = await self._client.write_register(10077, mode, **self._unit_kwargs)
+            wr = await self._guarded(self._client.write_register, 10077, mode, **self._unit_kwargs)
             if wr.isError():
                 raise RuntimeError(f"Failed to write import limit mode {mode}: {wr}")
         await self.async_request_refresh()
@@ -619,7 +693,8 @@ class AnkerX1Coordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Write the import power limit value as signed 32-bit LE at 10078."""
         async with self._lock:
             await self._ensure_connected()
-            wr = await self._client.write_registers(
+            wr = await self._guarded(
+                self._client.write_registers,
                 10078, le_words(value), **self._unit_kwargs
             )
             if wr.isError():
@@ -635,13 +710,15 @@ class AnkerX1Coordinator(DataUpdateCoordinator[dict[str, Any]]):
         async with self._lock:
             await self._ensure_connected()
             # Clear the power setpoint (write 0,0 to 10071).
-            wr = await self._client.write_registers(
+            wr = await self._guarded(
+                self._client.write_registers,
                 10071, [0, 0], **self._unit_kwargs
             )
             if wr.isError():
                 raise RuntimeError(f"Failed to clear power setpoint: {wr}")
             # Switch back to app-managed mode.
-            wr2 = await self._client.write_register(
+            wr2 = await self._guarded(
+                self._client.write_register,
                 10064, WORK_MODE_APP, **self._unit_kwargs
             )
             if wr2.isError():

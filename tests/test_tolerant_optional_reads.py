@@ -421,7 +421,12 @@ def test_block_h_and_m_no_longer_call_read_input_registers_directly():
     assert 10620 not in calls
 
 
-def test_timed_out_optional_blocks_are_disabled_for_the_coordinator_lifetime():
+def test_repeatedly_timed_out_optional_blocks_are_skipped():
+    """A block that keeps timing out stops being polled — but not on the first
+    miss. One link glitch skews the transaction stream and makes EVERY block
+    time out; retiring on the first timeout took a live site's meter block out
+    for the rest of the night. See tests/test_modbus_reconnect.py for the
+    OptionalBlocks behaviour this wires up."""
     source = _coordinator_source()
     tree = ast.parse(source)
     init = next(
@@ -430,7 +435,7 @@ def test_timed_out_optional_blocks_are_disabled_for_the_coordinator_lifetime():
         if isinstance(node, ast.FunctionDef) and node.name == "__init__"
     )
     assigned = _assigned_attributes(init)
-    assert "self._disabled_blocks" in assigned
+    assert "self._optional" in assigned
 
     reader = next(
         node
@@ -440,7 +445,9 @@ def test_timed_out_optional_blocks_are_disabled_for_the_coordinator_lifetime():
     body = ast.unparse(reader)
     assert "read_optional" in body
     assert "timed_out" in body
-    assert "self._disabled_blocks.add" in body
+    assert "self._optional.should_read" in body
+    assert "self._optional.record_timeout" in body
+    assert "self._optional.record_success" in body
 
 
 def test_disabling_an_optional_block_warns_once_naming_block_and_address():

@@ -22,9 +22,19 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import time
 from typing import Any, Awaitable, Callable, NamedTuple, Sequence
 
 from pymodbus.exceptions import ConnectionException, ModbusException
+
+# Failures that say the LINK is in doubt, as opposed to the device answering
+# with a Modbus error code. ``ConnectionException`` and ``ModbusIOException``
+# both derive from ``ModbusException``, so the one entry covers them.
+TRANSPORT_ERRORS: tuple[type[BaseException], ...] = (
+    ModbusException,
+    asyncio.TimeoutError,
+    OSError,
+)
 
 
 def unit_kwarg_name(client: object) -> str:
@@ -43,6 +53,111 @@ def unit_kwarg_name(client: object) -> str:
     if "device_id" in params:
         return "device_id"
     return "slave"
+
+
+async def guarded_call(
+    call: Callable[..., Awaitable[Any]],
+    *args: Any,
+    on_transport_error: Callable[[], None],
+    **kwargs: Any,
+) -> Any:
+    """Run one pymodbus call; on a transport failure run the hook, then re-raise.
+
+    pymodbus leaves the socket OPEN when a request exhausts its retries
+    ("No response received after 3 retries, continue with next request").
+    The reply can still arrive afterwards, and it is then matched against the
+    NEXT request's transaction id — from that point every read logs
+    "request ask for transaction_id=X but got id=Y, Skipping" and the client
+    never resynchronises, because nothing in it notices the skew. The socket
+    still reports ``connected``, so a connect-if-not-connected guard is no
+    help either.
+
+    Reconnecting is the only recovery: a new connection restarts the
+    transaction counter. So every call that touches the wire routes through
+    here and hands the caller a chance to drop the socket before the next
+    request goes out.
+
+    Errors outside :data:`TRANSPORT_ERRORS` (a decode bug, a cancelled task)
+    say nothing about the link and pass through untouched.
+    """
+    try:
+        return await call(*args, **kwargs)
+    except TRANSPORT_ERRORS:
+        on_transport_error()
+        raise
+
+
+class OptionalBlocks:
+    """Skip-list for register blocks a unit may not implement.
+
+    Two failure modes look identical from one poll, and telling them apart is
+    the whole point of this class — conflating them cost a live site its meter
+    sensors for nine hours:
+
+    - the unit genuinely lacks the register: every poll pays a full
+      retry/timeout cycle, so the block has to be retired;
+    - the LINK glitched: one IO error skews the pymodbus transaction stream
+      and every read in that cycle times out, including blocks the unit does
+      implement.
+
+    Retiring on the first timeout cannot distinguish them, so a block is
+    retired only after ``threshold`` CONSECUTIVE timeouts. A retired block is
+    re-probed once ``retry_after_s`` has passed, so hardware that comes back —
+    a meter power-cycled, a link repaired — recovers on its own instead of
+    waiting for someone to reload the integration.
+
+    ``monotonic`` is injectable so tests can drive the clock.
+    """
+
+    def __init__(
+        self,
+        threshold: int = 3,
+        retry_after_s: float = 900.0,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        if threshold < 1:
+            raise ValueError("threshold must be at least 1")
+        if retry_after_s <= 0:
+            raise ValueError("retry_after_s must be positive")
+        self.threshold = threshold
+        self.retry_after_s = retry_after_s
+        self._monotonic = monotonic
+        self._timeouts: dict[str, int] = {}
+        self._retired_at: dict[str, float] = {}
+
+    def should_read(self, block: str) -> bool:
+        """Is it worth spending a poll on *block* this cycle?
+
+        A retired block answers False until its re-probe is due; the streak
+        counter is cleared at that point so a re-probe that fails has to earn
+        the full ``threshold`` again rather than retiring on its first miss.
+        """
+        retired_at = self._retired_at.get(block)
+        if retired_at is None:
+            return True
+        if self._monotonic() - retired_at < self.retry_after_s:
+            return False
+        del self._retired_at[block]
+        self._timeouts.pop(block, None)
+        return True
+
+    def record_success(self, block: str) -> None:
+        """The block answered: clear the streak and any retirement."""
+        self._timeouts.pop(block, None)
+        self._retired_at.pop(block, None)
+
+    def record_timeout(self, block: str) -> bool:
+        """Count a timeout; return True only on the poll that retires *block*.
+
+        The single-transition return keeps the caller's warning to one line
+        per retirement instead of one per poll.
+        """
+        count = self._timeouts.get(block, 0) + 1
+        self._timeouts[block] = count
+        if count >= self.threshold and block not in self._retired_at:
+            self._retired_at[block] = self._monotonic()
+            return True
+        return False
 
 
 class OptionalRead(NamedTuple):
