@@ -19,8 +19,21 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Python Semantic Release
-        id: release
-        uses: python-semantic-release/python-semantic-release@v9
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          python-version: "3.13"
+
+      # Not the python-semantic-release action: it is a `image: Dockerfile` action
+      # that pip-installs itself at job time and resolves `gitpython ~= 3.0`, so it
+      # picks up GitPython 3.1.60, which dropped `Actor.name_email_regex` and makes
+      # PSR die on config load. A caller cannot pin a transitive dep of a Docker
+      # action, so install PSR here instead. Once the upstream fix ships
+      # (python-semantic-release#1477), drop the GitPython pin.
+      - name: Install Python Semantic Release
+        run: pip install "python-semantic-release==9.21.2" "gitpython<3.1.60"
+
+      - name: Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: semantic-release version
