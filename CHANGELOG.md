@@ -1,6 +1,48 @@
 # CHANGELOG
 
 
+## v0.5.2 (2026-08-26)
+
+### Bug Fixes
+
+- **modbus**: Reconnect after a transport error instead of limping on a skewed stream
+  ([`685c1b1`](https://github.com/afewyards/anker-x1-ha/commit/685c1b1b961631294719ec30ca3dab6f3ccf94ee))
+
+pymodbus leaves the socket open when a request exhausts its retries. The late reply then lands
+  against the next request's transaction id, and from there every read logs "request ask for
+  transaction_id=X but got id=Y, Skipping" while the client still reports connected — so
+  _ensure_connected never reconnects and only reloading the config entry recovers it. A live site
+  lost its meter block that way for nine hours.
+
+Route every wire call through guarded_call, which closes the socket before re-raising, and wrap the
+  poll in _reconnect_on_transport_error so the next cycle builds a fresh connection with a fresh
+  transaction counter. Transport failures now surface as UpdateFailed rather than a traceback per
+  second; an isError() response is untouched, since the device answered.
+
+The second half of that outage was the optional-block skip list: one timeout retired a block for the
+  life of the coordinator, and a skewed stream makes every block time out, so a single glitch took
+  the external meter out for good. OptionalBlocks retires a block only after repeated consecutive
+  timeouts and re-probes a retired one periodically, so hardware that comes back recovers without a
+  reload.
+
+### Chores
+
+- **ci**: Pin GitPython below 3.1.60 to unbreak the release job
+  ([`f8436fc`](https://github.com/afewyards/anker-x1-ha/commit/f8436fcc1ddb506340c02e6b4868945e9b16e7cb))
+
+GitPython 3.1.60 (2026-08-25) removed the Actor.name_email_regex class attribute.
+  python-semantic-release still calls it while validating commit_author during config load, so every
+  run now aborts with "type object 'Actor' has no attribute 'name_email_regex'" before doing any
+  work. Upstream has a fix open but unreleased (python-semantic-release#1477), and the v10 line
+  carries the identical call, so upgrading is not a way out.
+
+The pin cannot live at the call site. The PSR action is a `image: Dockerfile` action that
+  pip-installs itself at job time and re-resolves `gitpython ~= 3.0` on every run, and a caller
+  cannot constrain a transitive dependency of a Docker action. Install PSR in the job instead. Its
+  entrypoint does nothing beyond exporting GH_TOKEN and running `semantic-release version`, and @v9
+  already resolved to 9.21.2, so the job behaves as it did before.
+
+
 ## v0.5.1 (2026-08-21)
 
 ### Bug Fixes
