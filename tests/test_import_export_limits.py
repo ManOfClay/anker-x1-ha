@@ -199,28 +199,28 @@ def test_all_limit_fields_in_coordinator_return_dict():
 
 def test_async_set_export_limit_mode_writes_register_10074():
     source = _load_method_source("async_set_export_limit_mode")
-    assert "write_register(10074" in source
+    assert "write_register, 10074" in source
     assert "isError()" in source
     assert "async_request_refresh()" in source
 
 
 def test_async_set_export_limit_value_writes_registers_10075():
     source = _load_method_source("async_set_export_limit_value")
-    assert "write_registers(10075, le_words(value)" in source
+    assert "write_registers, 10075, le_words(value)" in source
     assert "isError()" in source
     assert "async_request_refresh()" in source
 
 
 def test_async_set_import_limit_mode_writes_register_10077():
     source = _load_method_source("async_set_import_limit_mode")
-    assert "write_register(10077" in source
+    assert "write_register, 10077" in source
     assert "isError()" in source
     assert "async_request_refresh()" in source
 
 
 def test_async_set_import_limit_value_writes_registers_10078():
     source = _load_method_source("async_set_import_limit_value")
-    assert "write_registers(10078, le_words(value)" in source
+    assert "write_registers, 10078, le_words(value)" in source
     assert "isError()" in source
     assert "async_request_refresh()" in source
 

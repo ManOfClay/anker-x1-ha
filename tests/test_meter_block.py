@@ -139,13 +139,25 @@ def _import_modbus_client():
 # ---------------------------------------------------------------------------
 
 def test_block_m_reads_10620_count_47():
-    calls = _find_read_input_registers_calls()
+    """Read through the optional-block helper: pymodbus raises rather than
+    returning an error response once a request exhausts its retries, so
+    `isError()` alone cannot make the meter optional."""
+    source = _load_coordinator_source()
+    tree = ast.parse(source)
+    calls = {
+        ast.literal_eval(node.args[1]): ast.literal_eval(node.args[2])
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_read_optional_block"
+    }
     assert calls.get(10620) == 47
 
 
 def test_block_m_read_is_tolerant_like_block_h():
     source = _load_coordinator_source()
-    assert "m = rr_m.registers if not rr_m.isError() else None" in source
+    assert 'h = await self._read_optional_block("H", 10253, 1)' in source
+    assert 'm = await self._read_optional_block("M", 10620, 47)' in source
 
 
 def test_module_docstring_documents_block_m():
