@@ -100,6 +100,32 @@ def manifest_version() -> str:
     return match.group(2)
 
 
+def warn_if_stale(version: str) -> None:
+    """Warn when the manifest is not behind the version we just computed.
+
+    The revision comes from the local tags, so a clone whose tags are stale --
+    `git fetch --no-tags`, a shallow checkout -- computes a number that was
+    already published, and --apply would walk the manifest backwards. The
+    manifest sitting at or above the computed version is the cheap tell.
+
+    Only a warning, never fatal: `manifest == next` is also the legitimate
+    idempotent path, where the version was applied in an earlier commit and the
+    release job finds nothing to commit before tagging. The two cannot be told
+    apart without the very tag list that is missing, and the release job is the
+    authority anyway -- its checkout always carries the tags.
+    """
+    def parts(value: str) -> tuple[int, ...]:
+        return tuple(int(p) for p in re.findall(r"\d+", value))
+
+    if parts(manifest_version()) >= parts(version):
+        print(
+            f"warning: manifest is already at {manifest_version()}, not behind the "
+            f"computed {version} -- if that is unexpected, the local tags are stale: "
+            "run `git fetch --tags` and try again.",
+            file=sys.stderr,
+        )
+
+
 def apply(version: str) -> bool:
     """Write ``version`` into the manifest. Returns True if the file changed."""
     text = MANIFEST.read_text()
@@ -135,6 +161,7 @@ def main() -> None:
         return
 
     version = next_version()
+    warn_if_stale(version)
     if args.apply:
         changed = apply(version)
         print(f"{'set' if changed else 'already at'} {version}", file=sys.stderr)

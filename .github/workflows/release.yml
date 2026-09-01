@@ -33,6 +33,13 @@ jobs:
         id: version
         run: |
           version="$(python tools/fork_release.py --print-next)"
+          # Belt and braces: the revision is counted off the local tags, so a
+          # checkout that somehow lacks them would recompute a published number
+          # and this job would try to move an existing tag. Fail loudly instead.
+          if git ls-remote --exit-code --tags origin "refs/tags/v$version" >/dev/null 2>&1; then
+            echo "::error::v$version already exists on origin — the tag list was incomplete when the version was computed."
+            exit 1
+          fi
           echo "Releasing $version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
