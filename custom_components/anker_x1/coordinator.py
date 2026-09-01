@@ -410,6 +410,13 @@ class AnkerX1Coordinator(DataUpdateCoordinator[dict[str, Any]]):
             # 10112-10117  sw_version  string(6 regs)
             if self.sw_version is None:
                 self.sw_version = decode_string_lowbyte(b[22:28])  # 10112-10117
+            # 10124-10125  rated_power  i32  (W) — the nameplate Pn, 12000 on
+            # the X1-H12K-T. Static, so a diagnostic sensor costs one recorder
+            # row for the life of the install.
+            rated_power: int = decode_i32_le(b[34:36])
+            # 10126-10127  max_active_power  i32  (W) — the ceiling the PCS
+            # will actually regulate to; equals Pn on this unit.
+            max_active_power: int = decode_i32_le(b[36:38])
             # 10132  output_mode  u16  (0=L/N, 1=L1/L2/L3/N)
             output_mode: int = decode_u16(b[42])
 
@@ -636,6 +643,9 @@ class AnkerX1Coordinator(DataUpdateCoordinator[dict[str, Any]]):
             "meter_comm_status": meter_comm_status,
             "meter_type": meter_type,
             "meter_total_power": meter_total_power,
+            # Nameplate (static, read from Block B on every poll)
+            "rated_power": rated_power,
+            "max_active_power": max_active_power,
             # Device identity (str)
             "model": self.model or "",
             "serial": self.serial or "",

@@ -107,6 +107,7 @@ device page.
 | `plant_status` / `battery_status` | — | text enum |
 | `output_mode` | — | wiring topology (L/N vs three-phase) — diagnostic |
 | `meter_comm_status` | — | external meter link state — diagnostic |
+| `rated_power` / `max_active_power` | W | nameplate Pn and regulation ceiling (regs 10124 / 10126) — diagnostic |
 | `model` / `serial` | — | diagnostic |
 
 > **PV, meter and pack-voltage sensors** appear on every install but only carry
@@ -210,10 +211,10 @@ command.
 
 - **`charge_power` / `discharge_power`** — the signed `battery_power` split into
   two unsigned sensors (handy for the Energy dashboard and automations).
-- **`battery_charge_energy` / `battery_discharge_energy`** — true daily energy.
-  The device's own "daily" registers don't reset on this firmware, so these are
-  derived from the **lifetime totals** and reset at local midnight (the baseline
-  is persisted across restarts and re-based if HA was off over midnight).
+- **`battery_charge_energy` / `battery_discharge_energy`** — daily energy, read
+  natively from regs 10020 and 10260. These used to be derived from the lifetime
+  totals because the device's own daily registers were believed not to reset;
+  they do, on the device's own clock, so the derivation is gone.
 - **`pv_power` vs `usable_pv_power`** — `pv_power` is the *gross* sum of the two
   DC strings (V × I per string). `usable_pv_power` is the inverter's own
   post-MPPT harvested total (reg 10183); it reads lower than the gross sum at

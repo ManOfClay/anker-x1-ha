@@ -190,6 +190,22 @@ NUMERIC_SENSOR_DESCRIPTIONS: tuple[AnkerX1SensorEntityDescription, ...] = (
         device_class=SensorDeviceClass.ENERGY,
         state_class=SensorStateClass.TOTAL_INCREASING,
     ),
+    # Nameplate, straight off Block B. Both are constants, so they cost one
+    # recorder row for the life of the install.
+    AnkerX1SensorEntityDescription(
+        key="rated_power",
+        name="Rated Power",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    AnkerX1SensorEntityDescription(
+        key="max_active_power",
+        name="Maximum Active Power",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
     AnkerX1SensorEntityDescription(
         key="battery_module_count",
         name="Battery Modules",
