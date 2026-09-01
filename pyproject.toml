@@ -1,25 +1,17 @@
 # This project is a Home Assistant custom integration, not a distributed Python
-# package. The only purpose of this file is to configure Python Semantic Release
-# (PSR), which auto-versions from Conventional Commits and cuts a GitHub release
-# on every push to main (see .github/workflows/release.yml).
+# package. The only purpose of this file is to record which upstream release
+# this fork sits on (see below) — the release job reads it from here.
 
-[tool.semantic_release]
-# Stay on the 0.x line: a breaking change bumps minor, not to 1.0.0.
-major_on_zero = false
-# The version lives in the HA manifest; PSR rewrites it on each release.
-version_variables = [
-    "custom_components/anker_x1/manifest.json:version"
-]
-tag_format = "v{version}"
-commit_message = "chore(release): {version}"
-# Nothing to build/publish — this is a release-tag + GitHub-release only flow.
-build_command = ""
+[tool.anker_x1_fork]
+# The upstream release currently merged into this fork. Bump this by hand as
+# part of each `git merge upstream/main`, then the release job derives the
+# published version as `<upstream_version>.<fork revision>` — see
+# tools/fork_release.py for why that shape and not `+fork.N`.
+upstream_version = "0.5.2"
 
-[tool.semantic_release.changelog]
-# No in-repo CHANGELOG file; release notes are generated on the GitHub release.
-changelog_file = ""
-
-[tool.semantic_release.commit_parser_options]
-allowed_tags = ["feat", "fix", "docs", "style", "refactor", "perf", "test", "chore"]
-minor_tags = ["feat"]
-patch_tags = ["fix", "perf"]
+# Python Semantic Release used to own the version here. It cannot express a
+# four-segment version: it derives a strict three-segment SemVer from
+# Conventional Commits, so it would keep producing numbers that collide with
+# upstream's own releases — v0.5.2 already means two unrelated trees because of
+# that. tools/fork_release.py replaces it; commit messages stay Conventional
+# Commits for the changelog, they just no longer decide the version.

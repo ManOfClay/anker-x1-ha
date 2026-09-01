@@ -4,11 +4,17 @@
 [![Validate](https://github.com/afewyards/anker-x1-ha/actions/workflows/validate.yml/badge.svg)](https://github.com/afewyards/anker-x1-ha/actions/workflows/validate.yml)
 [![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/afewyards)
 
-> **Fork** of [afewyards/anker-x1-ha](https://github.com/afewyards/anker-x1-ha),
-> tracking upstream **v0.5.2**. Adds `PV3rd Party Power` (register 10004) and
-> holds the last good inverter temperature over the firmware's 0-reads.
+> **Fork** of [afewyards/anker-x1-ha](https://github.com/afewyards/anker-x1-ha).
+> Adds `PV3rd Party Power` (register 10004) and holds the last good inverter
+> temperature over the firmware's 0-reads.
 > Issues with the integration itself belong upstream — please report them
 > [there](https://github.com/afewyards/anker-x1-ha/issues).
+>
+> **Versions** read `<upstream release>.<fork revision>`: `0.5.2.1` is the first
+> fork release on top of upstream **v0.5.2**, and upstream's next release
+> supersedes it as `0.5.3.x`. So the number always says which upstream state is
+> inside. HACS treats each one as an update — unlike `+fork.N` build metadata,
+> which SemVer ignores when comparing.
 
 Local **Modbus TCP** integration for the **Anker SOLIX X1** hybrid inverter /
 battery (developed and tested on **X1-H12K-T**). No cloud, no internet — Home

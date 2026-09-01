@@ -1,8 +1,9 @@
 name: Release
 
 on:
-  push:
-    branches: [main]
+  # Manual only. The fork revision counts releases, not pushes — an auto-release
+  # on every push to main would burn a revision on a README typo. Merge upstream
+  # and land fork commits freely, then trigger this when you want a release.
   workflow_dispatch:
 
 jobs:
@@ -10,13 +11,14 @@ jobs:
     runs-on: ubuntu-latest
     concurrency: release
     permissions:
-      id-token: write
       contents: write
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          # Full history AND tags: tools/fork_release.py reads the fork revision
+          # off the existing v<base>.<n> tags.
           fetch-depth: 0
 
       - name: Set up Python
@@ -24,16 +26,37 @@ jobs:
         with:
           python-version: "3.13"
 
-      # Not the python-semantic-release action: it is a `image: Dockerfile` action
-      # that pip-installs itself at job time and resolves `gitpython ~= 3.0`, so it
-      # picks up GitPython 3.1.60, which dropped `Actor.name_email_regex` and makes
-      # PSR die on config load. A caller cannot pin a transitive dep of a Docker
-      # action, so install PSR here instead. Once the upstream fix ships
-      # (python-semantic-release#1477), drop the GitPython pin.
-      - name: Install Python Semantic Release
-        run: pip install "python-semantic-release==9.21.2" "gitpython<3.1.60"
+      # Not python-semantic-release. It derives a strict three-segment SemVer
+      # from Conventional Commits and cannot express <upstream>.<fork revision>,
+      # so it produced numbers that collide with upstream's own releases.
+      - name: Compute fork version
+        id: version
+        run: |
+          version="$(python tools/fork_release.py --print-next)"
+          echo "Releasing $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
-      - name: Release
+      - name: Bump manifest and tag
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.version }}"
+          python tools/fork_release.py --apply
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet; then
+            echo "Manifest already at $version, nothing to commit."
+          else
+            git commit -am "chore(release): $version"
+            git push
+          fi
+          git tag "v$version"
+          git push origin "v$version"
+
+      - name: GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: semantic-release version
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          gh release create "v$version" \
+            --title "v$version" \
+            --generate-notes
