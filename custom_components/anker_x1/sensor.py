@@ -22,12 +22,9 @@ from homeassistant.const import (
     UnitOfPower,
     UnitOfTemperature,
 )
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.event import async_track_time_change
-from homeassistant.helpers.restore_state import ExtraStoredData, RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
-from homeassistant.util import dt as dt_util
 
 from .const import (
     BATTERY_STATUS,
@@ -151,6 +148,33 @@ NUMERIC_SENSOR_DESCRIPTIONS: tuple[AnkerX1SensorEntityDescription, ...] = (
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         device_class=SensorDeviceClass.ENERGY,
         state_class=SensorStateClass.TOTAL_INCREASING,
+    ),
+    # Native daily energy, read straight off the device's own day boundary
+    # (verified rolling over at 00:00:48 local). These three replace the
+    # baseline-subtraction the integration used to do for the battery pair.
+    AnkerX1SensorEntityDescription(
+        key="battery_charge_energy",
+        name="Battery Charge Energy",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        suggested_display_precision=1,
+    ),
+    AnkerX1SensorEntityDescription(
+        key="battery_discharge_energy",
+        name="Battery Discharge Energy",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        suggested_display_precision=1,
+    ),
+    AnkerX1SensorEntityDescription(
+        key="load_energy_today",
+        name="Load Energy Today",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        suggested_display_precision=1,
     ),
     AnkerX1SensorEntityDescription(
         key="grid_bought_total",
@@ -393,103 +417,6 @@ class AnkerX1DiagnosticSensor(AnkerX1Sensor):
         return self.coordinator.data.get(self._key)
 
 
-@dataclass
-class _RestoredBaseline(ExtraStoredData):
-    """Persisted baseline (lifetime total at the start of the current day)."""
-
-    baseline: float | None
-    day: str | None
-
-    def as_dict(self) -> dict[str, Any]:
-        return {"baseline": self.baseline, "day": self.day}
-
-
-class AnkerX1DailyEnergySensor(
-    CoordinatorEntity[AnkerX1Coordinator], RestoreEntity, SensorEntity
-):
-    """Daily energy derived from a lifetime total, reset at local midnight.
-
-    The device's own 'daily' registers don't reset on this firmware, so we
-    track the lifetime total and subtract its value at the start of the day.
-    The baseline is persisted (survives restarts) and re-based if HA was off
-    across midnight.
-    """
-
-    _attr_has_entity_name = True
-    _attr_device_class = SensorDeviceClass.ENERGY
-    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
-    _attr_state_class = SensorStateClass.TOTAL_INCREASING
-    _attr_suggested_display_precision = 1
-
-    def __init__(
-        self,
-        coordinator: AnkerX1Coordinator,
-        entry: ConfigEntry,
-        key: str,
-        name: str,
-        source_key: str,
-    ) -> None:
-        super().__init__(coordinator)
-        self._attr_name = name
-        self._attr_unique_id = f"{entry.entry_id}_{key}"
-        self._attr_device_info = coordinator.device_info
-        self._source_key = source_key
-        self._baseline: float | None = None
-        self._baseline_day: str | None = None
-
-    @staticmethod
-    def _today() -> str:
-        return dt_util.now().date().isoformat()
-
-    def _current_total(self) -> float | None:
-        if self.coordinator.data is None:
-            return None
-        return self.coordinator.data.get(self._source_key)
-
-    async def async_added_to_hass(self) -> None:
-        await super().async_added_to_hass()
-        last = await self.async_get_last_extra_data()
-        if last is not None:
-            data = last.as_dict()
-            self._baseline = data.get("baseline")
-            self._baseline_day = data.get("day")
-        # First run, or HA was off across midnight -> rebase to current total.
-        if self._baseline is None or self._baseline_day != self._today():
-            total = self._current_total()
-            if total is not None:
-                self._baseline = total
-                self._baseline_day = self._today()
-        self.async_on_remove(
-            async_track_time_change(
-                self.hass, self._handle_midnight, hour=0, minute=0, second=0
-            )
-        )
-
-    @callback
-    def _handle_midnight(self, now) -> None:
-        total = self._current_total()
-        if total is not None:
-            self._baseline = total
-            self._baseline_day = self._today()
-        self.async_write_ha_state()
-
-    @property
-    def extra_restore_state_data(self) -> ExtraStoredData:
-        return _RestoredBaseline(self._baseline, self._baseline_day)
-
-    @property
-    def native_value(self) -> float | None:
-        total = self._current_total()
-        if total is None:
-            return None
-        if self._baseline is None:
-            self._baseline = total
-            self._baseline_day = self._today()
-        if total < self._baseline:  # device counter rolled back -> rebase
-            self._baseline = total
-        return round(total - self._baseline, 2)
-
-
 # ---------------------------------------------------------------------------
 # Platform setup
 # ---------------------------------------------------------------------------
@@ -512,19 +439,5 @@ async def async_setup_entry(
 
     for description in DIAGNOSTIC_SENSOR_DESCRIPTIONS:
         entities.append(AnkerX1DiagnosticSensor(coordinator, entry, description))
-
-    # Daily energy (resets at local midnight), derived from lifetime totals.
-    entities.append(
-        AnkerX1DailyEnergySensor(
-            coordinator, entry, "battery_charge_energy",
-            "Battery Charge Energy", "battery_charge_total",
-        )
-    )
-    entities.append(
-        AnkerX1DailyEnergySensor(
-            coordinator, entry, "battery_discharge_energy",
-            "Battery Discharge Energy", "battery_discharge_total",
-        )
-    )
 
     async_add_entities(entities)

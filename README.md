@@ -99,7 +99,8 @@ device page.
 | `battery_module_count` | — | installed 5 kWh modules (diagnostic) |
 | `battery_nominal_capacity` | kWh | `battery_module_count` × 5 kWh (diagnostic) |
 | `inverter_temperature` | °C | diagnostic |
-| `battery_charge_energy` / `battery_discharge_energy` | kWh | **daily, resets at local midnight** (derived) |
+| `battery_charge_energy` / `battery_discharge_energy` | kWh | **daily**, read natively (regs 10020 / 10260) — resets on the device's own clock |
+| `load_energy_today` | kWh | **daily** house consumption energy (reg 10024) |
 | `battery_charge_total` / `battery_discharge_total` | kWh | **lifetime** |
 | `pv_energy_today` / `pv_energy_total` | kWh | daily / lifetime |
 | `grid_bought_total` / `grid_fed_in_total` | kWh | **daily** device counters (named *Grid Bought/Fed-in Today*) |
@@ -138,11 +139,21 @@ dashboard fields to these sensors:
 The battery and solar fields use the **lifetime `*_total`** sensors — the
 Energy dashboard buckets them into hours/days itself. The **grid** sensors
 (`grid_bought_total` / `grid_fed_in_total`) are the device's own **daily**
-counters that reset at local midnight; that's still fine here — the Energy
+counters despite the `_total` in their key; that's still fine here — the Energy
 dashboard's `total_increasing` handling detects the daily reset and keeps the
-running total correct. The derived daily `battery_charge_energy` /
-`battery_discharge_energy` sensors are for cards and automations, not this
-dashboard.
+running total correct. The daily `battery_charge_energy` /
+`battery_discharge_energy` / `load_energy_today` sensors are for cards and
+automations, not this dashboard.
+
+> **Only two registers on the device are genuine lifetime counters:** 10018
+> (`pv_energy_total`) and 10022 (`battery_charge_total`). Everything the spec
+> labels *Total Purchased / Feed-in / Load Consumption Energy* (10026, 10030,
+> 10034) resets at midnight along with its *Daily* twin — ground-truthed on
+> fw 1.0.16.1 across the 00:00:48 rollover, where 10030 went 0.30 → 0.00 and
+> 10034 69.67 → 0.00 while 10018 and 10022 held. The spec's *Daily* variants
+> (10028/10032) carry bit-identical values, so they are deliberately not
+> decoded. `battery_discharge_total` is a real lifetime counter, but it comes
+> from 10264 in a different block, not from this table.
 
 > **Have an external CHINT meter?** It offers no alternative for the grid
 > fields. Its energy and reactive-power registers (10646/10656/10664) still sit

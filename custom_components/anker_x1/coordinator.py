@@ -288,7 +288,7 @@ class AnkerX1Coordinator(DataUpdateCoordinator[dict[str, Any]]):
             e = rr_e.registers  # index 0 = address 10060
 
             # ----------------------------------------------------------
-            # Block F: battery energy totals 10258-10265 (count=8)
+            # Block F: battery daily + lifetime energy 10258-10265 (count=8)
             #   10262 total charge energy u32, 10264 total discharge u32
             #   (lifetime, monotonic — daily values are derived in HA)
             # ----------------------------------------------------------
@@ -361,12 +361,33 @@ class AnkerX1Coordinator(DataUpdateCoordinator[dict[str, Any]]):
             pv_energy_today: float = decode_u32_le(a[16:18]) / 100.0
             # 10018-10019  pv_energy_total  u32  (raw /100 kWh)
             pv_energy_total: float = decode_u32_le(a[18:20]) / 100.0
+            # 10020-10021  battery_charge_energy  u32  (raw /100 kWh, DAILY)
+            # The device resets this on its own clock -- ground-truthed
+            # 2026-09-02 00:00:48 local, where it went 6.35 -> 0.00 while
+            # 10022 held at 259.68. Read natively instead of deriving it from
+            # the lifetime total: the device's day boundary is authoritative
+            # and does not depend on HA's timezone or uptime.
+            battery_charge_energy: float = decode_u32_le(a[20:22]) / 100.0
             # 10022-10023  battery_charge_total  u32  (raw /100 kWh, lifetime)
             battery_charge_total: float = decode_u32_le(a[22:24]) / 100.0
+            # 10024-10025  load_energy_today  u32  (raw /100 kWh, DAILY)
+            # House consumption as energy; only load_power existed before.
+            # 10026 carries the same value and resets with it, so this
+            # firmware has no lifetime load total -- see the note at 10030.
+            load_energy_today: float = decode_u32_le(a[24:26]) / 100.0
             # 10030-10031  grid_bought_total  u32  (raw /100 kWh)
             # NOTE: gain is /100, same as every other energy reg here — the
             # official spec's "gain 10" column is wrong for energy on fw 1.0.16.
             # Ground-truthed 2026-07-09: raw 666 = 6.66 kWh (not 66.6).
+            # NOTE: these are DAILY counters despite both the key name and the
+            # spec, which calls 10030/10034 "Total Purchased/Feed-in Energy".
+            # Ground-truthed across the 2026-09-02 00:00:48 rollover: 10030
+            # went 0.30 -> 0.00 and 10034 69.67 -> 0.00, while the genuine
+            # lifetime registers 10018 and 10022 held. 10028/10032, the spec's
+            # "Daily" variants, carry bit-identical values and reset with them,
+            # so they add nothing and are deliberately not decoded. The keys
+            # keep the `_total` suffix only because renaming them would change
+            # the entity_id of every existing install.
             grid_bought_total: float = decode_u32_le(a[30:32]) / 100.0
             # 10034-10035  grid_fed_in_total  u32  (raw /100 kWh)
             grid_fed_in_total: float = decode_u32_le(a[34:36]) / 100.0
@@ -446,9 +467,15 @@ class AnkerX1Coordinator(DataUpdateCoordinator[dict[str, Any]]):
             import_limit_value: int = decode_u32_le(e[18:20])
 
             # ----------------------------------------------------------
-            # Decode Block F (base address 10258) — lifetime discharge total
-            # 10264-10265 = f[6:8]
+            # Decode Block F (base address 10258) — daily + lifetime discharge
             # ----------------------------------------------------------
+            # 10260-10261 = f[2:4]  battery_discharge_energy  u32  (DAILY)
+            # The only native daily discharge on the device; the plant-level
+            # table at 10016-10034 has no equivalent. Block F was already read
+            # in full and three of its four values thrown away: 10258 and
+            # 10262 duplicate 10020 and 10022 bit for bit.
+            battery_discharge_energy: float = decode_u32_le(f[2:4]) / 100.0
+            # 10264-10265 = f[6:8]  lifetime discharge total
             battery_discharge_total: float = decode_u32_le(f[6:8]) / 100.0
 
             # Block G decode (base 10224) — backup active power 10233 = g[9:11]
@@ -589,6 +616,10 @@ class AnkerX1Coordinator(DataUpdateCoordinator[dict[str, Any]]):
             "pv_energy_total": pv_energy_total,
             "battery_charge_total": battery_charge_total,
             "battery_discharge_total": battery_discharge_total,
+            # Native daily energy, straight off the device's own day boundary.
+            "battery_charge_energy": battery_charge_energy,
+            "battery_discharge_energy": battery_discharge_energy,
+            "load_energy_today": load_energy_today,
             "grid_bought_total": grid_bought_total,
             "grid_fed_in_total": grid_fed_in_total,
             # Status enums (raw int)
