@@ -1,7 +1,7 @@
 # Anker SOLIX X1 — Home Assistant Integration
 
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
-[![Validate](https://github.com/afewyards/anker-x1-ha/actions/workflows/validate.yml/badge.svg)](https://github.com/afewyards/anker-x1-ha/actions/workflows/validate.yml)
+[![Validate](https://github.com/ManOfClay/anker-x1-ha/actions/workflows/validate.yml/badge.svg?branch=main)](https://github.com/ManOfClay/anker-x1-ha/actions/workflows/validate.yml)
 [![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/afewyards)
 
 > **Fork** of [afewyards/anker-x1-ha](https://github.com/afewyards/anker-x1-ha).
