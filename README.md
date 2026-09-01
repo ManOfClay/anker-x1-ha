@@ -103,8 +103,6 @@ device page.
 | `battery_charge_total` / `battery_discharge_total` | kWh | **lifetime** |
 | `pv_energy_today` / `pv_energy_total` | kWh | daily / lifetime |
 | `grid_bought_total` / `grid_fed_in_total` | kWh | **daily** device counters (named *Grid Bought/Fed-in Today*) |
-| `meter_fwd_energy_total` / `meter_rev_energy_total` | kWh | lifetime, from the external meter (if present) |
-| `meter_total_reactive` | var | external meter reactive power (diagnostic) |
 | `plant_status` / `battery_status` | — | text enum |
 | `output_mode` | — | wiring topology (L/N vs three-phase) — diagnostic |
 | `meter_comm_status` | — | external meter link state — diagnostic |
@@ -146,11 +144,12 @@ running total correct. The derived daily `battery_charge_energy` /
 `battery_discharge_energy` sensors are for cards and automations, not this
 dashboard.
 
-> **Have an external CHINT meter?** `meter_fwd_energy_total` /
-> `meter_rev_energy_total` are **lifetime** grid totals and can be used for the
-> grid fields instead of the daily device counters. Which one is *consumption*
-> vs *return* depends on your meter's CT orientation — verify against a live
-> import/export before committing the mapping.
+> **Have an external CHINT meter?** It offers no alternative for the grid
+> fields. Its energy and reactive-power registers (10646/10656/10664) still sit
+> inside the meter block the integration reads, but are no longer decoded into
+> sensors: the three of them wrote ~1.3 M recorder rows per 10 days (~230 MB) on
+> a live install with no dashboard using them. Use the X1's own daily counters
+> above; `meter_total_power` remains for live monitoring.
 
 When you add the battery, HA also offers an optional **Type of power
 measurement** step for live monitoring. Choose **Standard** and set:
