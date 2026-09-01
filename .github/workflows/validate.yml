@@ -12,18 +12,25 @@ jobs:
     name: HACS
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: HACS validation
         uses: hacs/action@main
         with:
           category: integration
-          # Custom repo: brand assets live in the HA brands repo, not here.
-          ignore: brands
+          # These three gate inclusion in the HACS *default* store, which a
+          # personal fork of an existing integration will never enter — they say
+          # nothing about whether HACS can install this as a custom repository.
+          #   brands  brand assets live in the HA brands repo, not here
+          #   issues  issues stay disabled: bug reports belong upstream, as the
+          #           README says, and a fork's tracker would only split them
+          #   topics  discovery topics on a fork would just muddy the search
+          #           results for the upstream integration
+          ignore: brands issues topics
 
   hassfest:
     name: Hassfest
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Hassfest validation
         uses: home-assistant/actions/hassfest@master

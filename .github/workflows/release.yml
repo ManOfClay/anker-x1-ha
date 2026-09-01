@@ -15,7 +15,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # Full history AND tags: tools/fork_release.py reads the fork revision
           # off the existing v<base>.<n> tags.
